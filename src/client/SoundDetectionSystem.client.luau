@@ -13,6 +13,7 @@ local Settings = require(ReplicatedStorage.Shared.Settings)
 -- Extract numeric id part from the sound asset url
 local TARGET_ID = Settings.FartSoundId:match("%d+")
 
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local camera = workspace.CurrentCamera
