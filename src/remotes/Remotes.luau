@@ -52,10 +52,21 @@ local Remotes = {
 
 	-- Investigation Trigger
 	StartInvestigation = getRemote("RemoteEvent", "StartInvestigation"),
+	InvestigationStarted = getRemote("RemoteEvent", "InvestigationStarted"),
+	InvestigationChatMessage = getRemote("RemoteEvent", "InvestigationChatMessage"),
 
 	-- Voting System
 	CastVote = getRemote("RemoteEvent", "CastVote"),
 	PlayerVotedOut = getRemote("RemoteEvent", "PlayerVotedOut"),
+	VoteCountsUpdated = getRemote("RemoteEvent", "VoteCountsUpdated"),
+
+	-- Environment / Systems
+	SpeakerStateChanged = getRemote("RemoteEvent", "SpeakerStateChanged"),
+	ToggleSpeaker = getRemote("RemoteEvent", "ToggleSpeaker"),
+
+	-- Tasks
+	TaskCompleteRequest = getRemote("RemoteEvent", "TaskCompleteRequest"),
+	TaskProgressUpdated = getRemote("RemoteEvent", "TaskProgressUpdated"),
 }
 
 return Remotes 

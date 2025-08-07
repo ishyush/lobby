@@ -5,6 +5,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
 local Settings = require(ReplicatedStorage.Shared.Settings)
 local Remotes = require(ReplicatedStorage.Remotes.Remotes)
@@ -20,11 +21,27 @@ function FarterController.new()
 	self.maxFarts = Settings.FartsToWin
 	self.sprayUses = 0
 	self.sprayUsed = false
+	self.speakerActive = false
 
 	-- Listen for game state changes to create/destroy blame prompts
 	local player = Players.LocalPlayer
 	Remotes.GameStateChanged.OnClientEvent:Connect(function(newState)
 		self:_onGameStateChanged(newState)
+	end)
+	
+	-- Increment farter UI when a fart broadcast occurs and this client is farter
+	Remotes.FartBroadcast.OnClientEvent:Connect(function()
+		if self.isActive then
+			self:onFartSuccess()
+		end
+	end)
+
+	-- Speaker state from server
+	Remotes.SpeakerStateChanged.OnClientEvent:Connect(function(isActive)
+		self.speakerActive = isActive and true or false
+		if self.speakerButton then
+			self:_updateSpeakerButtonVisual()
+		end
 	end)
 	
 	return self
@@ -34,11 +51,13 @@ function FarterController:activate()
 	self.isActive = true
 	self.fartCount = 0
 	print("FarterController activated")
+	self:_createSpeakerButton()
 end
 
 function FarterController:deactivate()
 	self.isActive = false
 	print("FarterController deactivated")
+	self:_destroySpeakerButton()
 end
 
 function FarterController:onFartSuccess()
@@ -48,6 +67,15 @@ function FarterController:onFartSuccess()
 	-- Update UI if it exists
 	if self.fartCountLabel then
 		self.fartCountLabel.Text = "Farts: " .. self.fartCount .. "/" .. self.maxFarts
+		-- pop animation
+		local uiScale = self.fartCountLabel.Parent:FindFirstChild("UIScale") or Instance.new("UIScale")
+		uiScale.Parent = self.fartCountLabel.Parent
+		uiScale.Scale = 1
+		TweenService:Create(uiScale, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.08}):Play()
+		spawn(function()
+			wait(0.15)
+			TweenService:Create(uiScale, TweenInfo.new(0.12), {Scale = 1}):Play()
+		end)
 		print("Updated fart count display to:", self.fartCount, "/", self.maxFarts)
 	end
 	
@@ -87,6 +115,60 @@ function FarterController:destroyFartUI()
 	if self.fartCountLabel then
 		self.fartCountLabel.Parent:Destroy()
 		self.fartCountLabel = nil
+	end
+end
+
+-- Speaker UI ---------------------------------------------------------------
+function FarterController:_createSpeakerButton()
+	if not self.isActive then return end
+	local screenGui = game.Players.LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("GameUI")
+	if not screenGui then return end
+	
+	self:_destroySpeakerButton()
+	local button = Instance.new("TextButton")
+	button.Name = "SpeakerButton"
+	button.Size = UDim2.new(0, 140, 0, 40)
+	button.Position = UDim2.new(1, -160, 1, -60)
+	button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.TextScaled = true
+	button.Text = "Speaker: OFF"
+	button.Font = Enum.Font.GothamBold
+	button.Parent = screenGui
+	self.speakerButton = button
+	
+	button.MouseButton1Click:Connect(function()
+		Remotes.ToggleSpeaker:FireServer()
+	end)
+	
+	self:_updateSpeakerButtonVisual()
+end
+
+function FarterController:_destroySpeakerButton()
+	if self.speakerButton then
+		self.speakerButton:Destroy()
+		self.speakerButton = nil
+	end
+end
+
+function FarterController:_updateSpeakerButtonVisual()
+	if not self.speakerButton then return end
+	if self.speakerActive then
+		self.speakerButton.Text = "Speaker: ON"
+		TweenService:Create(self.speakerButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(0, 160, 0)}):Play()
+		-- pulse icon/text color
+		spawn(function()
+			for i=1,4 do
+				if not self.speakerButton then break end
+				TweenService:Create(self.speakerButton, TweenInfo.new(0.15), {TextColor3 = Color3.fromRGB(200, 255, 200)}):Play()
+				wait(0.15)
+				TweenService:Create(self.speakerButton, TweenInfo.new(0.15), {TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+				wait(0.15)
+			end
+		end)
+	else
+		self.speakerButton.Text = "Speaker: OFF"
+		TweenService:Create(self.speakerButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(40, 40, 40)}):Play()
 	end
 end
 

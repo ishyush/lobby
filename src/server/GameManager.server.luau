@@ -43,6 +43,11 @@ function GameManager.new()
 	self.roundActive = false
 	self.stateStartTime = 0
 	self.activeFartClouds = {}
+	-- Smelly system
+	self.smellyPlayers = {} -- [Player] = true if currently smelly
+	self.lastFartTime = nil -- last fart timestamp for the farter
+	self.farterPlayer = nil
+	self.votingScheduled = false
 	
 	-- Bind remote events
 	self:bindRemotes()
@@ -60,7 +65,7 @@ function GameManager:bindRemotes()
 	
 	-- Handle sniff attempts from Sniffer
 	Remotes.SniffPlayer.OnServerInvoke = function(player, targetPlayer)
-		if self.currentState == GameState.INVESTIGATION and self.roles[player] == Role.SNIFFER then
+		if self.roles[player] == Role.SNIFFER then
 			return self:handleSniff(player, targetPlayer)
 		end
 		return false
@@ -83,6 +88,30 @@ function GameManager:bindRemotes()
 	-- Handle investigation trigger from players
 	Remotes.StartInvestigation.OnServerEvent:Connect(function(player)
 		self:handleStartInvestigation(player)
+	end)
+
+	-- Speaker toggle from farter
+	Remotes.ToggleSpeaker.OnServerEvent:Connect(function(player)
+		if self.roles[player] == Role.FARTER then
+			self.speakerActive = not self.speakerActive
+			Remotes.SpeakerStateChanged:FireAllClients(self.speakerActive)
+		end
+	end)
+
+	-- Task complete request (placeholder: accept and broadcast progress)
+	Remotes.TaskCompleteRequest.OnServerEvent:Connect(function(player, taskId)
+		-- TODO: validate tasks by location/interaction; for now broadcast incremental progress
+		Remotes.TaskProgressUpdated:FireAllClients(player, taskId)
+	end)
+
+	-- Investigation chat relay (server-authoritative broadcast only during Investigation)
+	Remotes.InvestigationChatMessage.OnServerEvent:Connect(function(player, message)
+		if self.currentState ~= GameState.INVESTIGATION then return end
+		if type(message) ~= "string" then return end
+		message = string.sub(message, 1, 140)
+		for _, p in ipairs(Players:GetPlayers()) do
+			Remotes.InvestigationChatMessage:FireClient(p, player, message)
+		end
 	end)
 end
 
@@ -135,6 +164,8 @@ function GameManager:startRound()
 	self.roundActive = true
 	self.fartCount = 0
 	self.votes = {}
+	self.speakerActive = false
+	self.votingScheduled = false
 	
 	-- Only assign roles if they haven't been assigned yet
 	if not self.rolesAssigned then
@@ -150,6 +181,8 @@ function GameManager:startRound()
 	self.sprayedPlayers = {}
 	self.sprayUsed = false
 	self.activeFartClouds = {}
+	self.smellyPlayers = {}
+	self.lastFartTime = nil -- farter should not be smelly before first fart
 	self:changeState(GameState.MINGLE)
 end
 
@@ -171,6 +204,7 @@ function GameManager:assignRoles()
 	
 	-- Assign roles
 	self.roles[shuffledPlayers[1]] = Role.FARTER
+	self.farterPlayer = shuffledPlayers[1]
 	self.roles[shuffledPlayers[2]] = Role.SNIFFER
 	
 	-- Rest are innocent
@@ -219,6 +253,9 @@ function GameManager:runGameLoop()
 end
 
 function GameManager:changeState(newState)
+	if self.currentState == newState then
+		return
+	end
 	self.currentState = newState
 	self.stateStartTime = tick()
 	
@@ -228,8 +265,29 @@ function GameManager:changeState(newState)
 	for _, player in pairs(Players:GetPlayers()) do
 		Remotes.GameStateChanged:FireClient(player, newState)
 	end
+end
 
-	-- Blame ability no longer uses inventory tools
+function GameManager:_markSmelly(player)
+	self.smellyPlayers[player] = true
+end
+
+function GameManager:_clearSmelly(player)
+	self.smellyPlayers[player] = nil
+end
+
+function GameManager:_refreshSmellyTimeout()
+	-- Clears ALL smelly flags if farter has not farted for configured decay window
+	spawn(function()
+		local snapshot = self.lastFartTime
+		local SettingsModule = require(ReplicatedStorage.Shared.Settings)
+		wait(SettingsModule.SmellyDecaySeconds)
+		-- If lastFartTime unchanged and still earlier than now-decay, clear everyone
+		if self.lastFartTime == snapshot then
+			for plr, _ in pairs(self.smellyPlayers) do
+				self.smellyPlayers[plr] = nil
+			end
+		end
+	end)
 end
 
 function GameManager:handleFart(player)
@@ -238,6 +296,7 @@ function GameManager:handleFart(player)
 	end
 	
 	self.fartCount = self.fartCount + 1
+	self.lastFartTime = tick()
 	print("Fart detected! Count:", self.fartCount)
 	
 	-- Broadcast fart to all clients with position
@@ -249,15 +308,42 @@ function GameManager:handleFart(player)
 		-- Record cloud for investigation validation
 		table.insert(self.activeFartClouds, {position = position, created = tick()})
 		-- Cleanup after duration
-		local Settings = require(ReplicatedStorage.Shared.Settings)
+		local SettingsModule = require(ReplicatedStorage.Shared.Settings)
 		spawn(function()
-			wait(Settings.FartCloudDuration)
+			wait(SettingsModule.FartCloudDuration)
 			-- Remove expired cloud from list
 			for i=#self.activeFartClouds,1,-1 do
 				if self.activeFartClouds[i] and self.activeFartClouds[i].position == position then
 					table.remove(self.activeFartClouds, i)
 					break
 				end
+			end
+		end)
+	end
+	
+	-- Apply smelly to players within fart radius (including farter)
+	local fartRadius = Settings.SmellyRadius or Settings.FartCloudRadius
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character and p.Character:FindFirstChild("HumanoidRootPart") and character and character:FindFirstChild("HumanoidRootPart") then
+			local dist = (p.Character.HumanoidRootPart.Position - character.HumanoidRootPart.Position).Magnitude
+			if dist <= fartRadius then
+				self:_markSmelly(p)
+			end
+		end
+	end
+	-- Explicitly mark farter as smelly after fart
+	self:_markSmelly(player)
+	
+	-- Start 60s smelly decay timer relative to this fart
+	self:_refreshSmellyTimeout()
+	
+	-- Schedule voting UI about ~45s after fart (only once per round)
+	if not self.votingScheduled then
+		self.votingScheduled = true
+		spawn(function()
+			wait(45)
+			if self.roundActive and self.currentState ~= GameState.VOTING and self.currentState ~= GameState.ROUND_END then
+				self:changeState(GameState.VOTING)
 			end
 		end)
 	end
@@ -273,8 +359,10 @@ function GameManager:handleSniff(player, targetPlayer)
 		return false
 	end
 	
-	local targetRole = self.roles[targetPlayer]
-	return targetRole == Role.FARTER or self.sprayedPlayers[targetPlayer] == true
+	-- A player is smelly if marked by spray or within fart radius recently
+	local sprayed = self.sprayedPlayers[targetPlayer] ~= nil and tick() < self.sprayedPlayers[targetPlayer]
+	local smelly = self.smellyPlayers[targetPlayer] == true
+	return sprayed or smelly
 end
 
 function GameManager:handleVote(player, targetPlayer)
@@ -285,6 +373,7 @@ function GameManager:handleVote(player, targetPlayer)
 	-- Record the vote
 	self.votes[player] = targetPlayer
 	print(player.Name, "voted for", targetPlayer.Name)
+	-- No live vote count broadcast for anonymity
 end
 
 function GameManager:processVoting()
@@ -346,6 +435,10 @@ function GameManager:endRound()
 	-- Keep roles persistent across rounds
 	self.votes = {}
 	self.fartCount = 0
+	self.smellyPlayers = {}
+	self.lastFartTime = nil
+	self.sprayedPlayers = {}
+	self.votingScheduled = false
 end
 
 -- Handle the single-use blame spray ability
@@ -361,7 +454,9 @@ function GameManager:handleBlameSpray(player, targetPlayer)
 	end
 
 	self.sprayUsed = true
-	self.sprayedPlayers[targetPlayer] = true
+	-- mark sprayed with expiration timestamp
+	local SettingsModule = require(ReplicatedStorage.Shared.Settings)
+	self.sprayedPlayers[targetPlayer] = tick() + SettingsModule.SmellyDecaySeconds
 	print("Blame spray applied to", targetPlayer.Name)
 
 	-- Optional: Notify sprayed player (client-side effect could be added)
@@ -386,11 +481,14 @@ function GameManager:handleStartInvestigation(player)
 	local pos = character.HumanoidRootPart.Position
 
 	-- Check distance to any active cloud
-	local Settings = require(ReplicatedStorage.Shared.Settings)
+	local SettingsModule = require(ReplicatedStorage.Shared.Settings)
 	for _, cloud in ipairs(self.activeFartClouds) do
-		if (cloud.position - pos).Magnitude <= Settings.FartCloudRadius then
-			-- Transition to Investigation state
+		if (cloud.position - pos).Magnitude <= SettingsModule.FartCloudRadius then
+			-- Transition to Investigation state and broadcast starter
 			self:changeState(GameState.INVESTIGATION)
+			for _, p in ipairs(Players:GetPlayers()) do
+				Remotes.InvestigationStarted:FireClient(p, player)
+			end
 			return
 		end
 	end
