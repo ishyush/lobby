@@ -21,20 +21,35 @@ function VotingUI.new()
 	self.voteButtons = {}
 	self.selectedPlayer = nil
 	self.voteStartTime = 0
+	self.hasVoted = false
 	
 	return self
 end
 
 function VotingUI:activate()
 	self.isActive = true
+	self.hasVoted = false
 	self.voteStartTime = tick()
 	self.selectedPlayer = nil
 	
 	self:createVotingInterface()
+	-- Animate entry
+	if self.voteFrame then
+		local uiScale = Instance.new("UIScale")
+		uiScale.Scale = 0.9
+		uiScale.Parent = self.voteFrame
+		TweenService:Create(uiScale, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+	end
 	print("VotingUI activated")
 end
 
 function VotingUI:deactivate()
+	if self.isActive and self.voteFrame then
+		local uiScale = self.voteFrame:FindFirstChild("UIScale") or Instance.new("UIScale")
+		uiScale.Parent = self.voteFrame
+		TweenService:Create(uiScale, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Scale = 0.9}):Play()
+		wait(0.15)
+	end
 	self.isActive = false
 	self:destroyVotingInterface()
 	print("VotingUI deactivated")
@@ -82,7 +97,7 @@ function VotingUI:createVotingInterface()
 	countdownLabel.Font = Enum.Font.GothamBold
 	countdownLabel.Parent = voteFrame
 	
-	-- Create player list frame (with layout to avoid overlap)
+	-- Create player list frame (with layout)
 	local playerListFrame = Instance.new("ScrollingFrame")
 	playerListFrame.Name = "PlayerListFrame"
 	playerListFrame.Size = UDim2.new(1, -20, 1, -220)
@@ -97,7 +112,7 @@ function VotingUI:createVotingInterface()
 	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	listLayout.Parent = playerListFrame
 	
-	-- Create instruction label
+	-- Instruction label
 	local instructionLabel = Instance.new("TextLabel")
 	instructionLabel.Name = "InstructionLabel"
 	instructionLabel.Size = UDim2.new(1, 0, 0, 30)
@@ -112,9 +127,6 @@ function VotingUI:createVotingInterface()
 	-- Add voting buttons for each player
 	local players = Players:GetPlayers()
 	local buttonHeight = 50
-	local spacing = 5
-	local totalHeight = 0
-	
 	for i, targetPlayer in pairs(players) do
 		if targetPlayer ~= player then
 			local voteButton = Instance.new("TextButton")
@@ -130,15 +142,13 @@ function VotingUI:createVotingInterface()
 			voteButton.Font = Enum.Font.GothamBold
 			voteButton.Parent = playerListFrame
 			
-			-- Store button reference
 			self.voteButtons[targetPlayer] = voteButton
 			
-			-- Handle button click
 			voteButton.MouseButton1Click:Connect(function()
+				if self.hasVoted then return end
 				self:selectPlayer(targetPlayer)
 			end)
 			
-			-- Handle button hover
 			voteButton.MouseEnter:Connect(function()
 				if self.selectedPlayer ~= targetPlayer then
 					TweenService:Create(voteButton, TweenInfo.new(0.2), {
@@ -154,18 +164,16 @@ function VotingUI:createVotingInterface()
 					}):Play()
 				end
 			end)
-			
-			-- Update canvas size later through layout absolute content size
 		end
 	end
 	
-	-- Auto-update canvas size when content changes
+	-- Auto-update canvas size
 	playerListFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y)
 	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 		playerListFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y)
 	end)
 	
-	-- Create confirm vote button
+	-- Confirm vote button
 	local confirmButton = Instance.new("TextButton")
 	confirmButton.Name = "ConfirmVoteButton"
 	confirmButton.Size = UDim2.new(0, 150, 0, 40)
@@ -178,7 +186,6 @@ function VotingUI:createVotingInterface()
 	confirmButton.Font = Enum.Font.GothamBold
 	confirmButton.Parent = voteFrame
 	
-	-- Handle confirm button click
 	confirmButton.MouseButton1Click:Connect(function()
 		self:confirmVote()
 	end)
@@ -186,13 +193,12 @@ function VotingUI:createVotingInterface()
 	-- Start countdown
 	self:startCountdown(countdownLabel)
 	
-	-- Store references
 	self.voteFrame = voteFrame
 	self.countdownLabel = countdownLabel
 end
 
 function VotingUI:selectPlayer(player)
-	-- Deselect previous player
+	-- Deselect previous
 	if self.selectedPlayer and self.voteButtons[self.selectedPlayer] then
 		local prevButton = self.voteButtons[self.selectedPlayer]
 		TweenService:Create(prevButton, TweenInfo.new(0.2), {
@@ -200,7 +206,6 @@ function VotingUI:selectPlayer(player)
 		}):Play()
 	end
 	
-	-- Select new player
 	self.selectedPlayer = player
 	
 	if self.voteButtons[player] then
@@ -214,19 +219,17 @@ function VotingUI:selectPlayer(player)
 end
 
 function VotingUI:confirmVote()
+	if self.hasVoted then return end
 	if not self.selectedPlayer then
-		-- Show error message
 		self:showMessage("Please select a player to vote for!", Color3.fromRGB(255, 0, 0))
 		return
 	end
+	self.hasVoted = true
 	
-	-- Send vote to server
+	-- Send to server
 	Remotes.CastVote:FireServer(self.selectedPlayer)
 	
-	-- Show confirmation
-	self:showMessage("Vote cast for " .. self.selectedPlayer.Name .. "!", Color3.fromRGB(0, 255, 0))
-	
-	-- Disable all buttons
+	-- Lock UI
 	for player, button in pairs(self.voteButtons) do
 		button.Active = false
 		if player == self.selectedPlayer then
@@ -238,11 +241,20 @@ function VotingUI:confirmVote()
 		end
 	end
 	
+	self:showMessage("Vote received!", Color3.fromRGB(0, 200, 0))
+	
+	-- Optionally close the panel after a short delay to avoid repeated actions
+	spawn(function()
+		wait(0.6)
+		if self.isActive then
+			self:deactivate()
+		end
+	end)
+	
 	print("Vote confirmed for:", self.selectedPlayer.Name)
 end
 
 function VotingUI:showMessage(message, color)
-	-- Create temporary message
 	local messageLabel = Instance.new("TextLabel")
 	messageLabel.Size = UDim2.new(0, 300, 0, 50)
 	messageLabel.Position = UDim2.new(0.5, -150, 0.8, 0)
@@ -253,11 +265,9 @@ function VotingUI:showMessage(message, color)
 	messageLabel.TextScaled = true
 	messageLabel.Font = Enum.Font.GothamBold
 	messageLabel.Parent = self.voteFrame
-	
-	-- Auto-destroy after 3 seconds
 	spawn(function()
-		wait(3)
-		messageLabel:Destroy()
+		wait(2.2)
+		if messageLabel then messageLabel:Destroy() end
 	end)
 end
 
@@ -269,7 +279,6 @@ function VotingUI:startCountdown(countdownLabel)
 			countdownLabel.Text = "Time remaining: " .. math.ceil(remaining) .. "s"
 			wait(0.1)
 		end
-		
 		if self.isActive then
 			countdownLabel.Text = "Time's up!"
 		end
@@ -282,17 +291,20 @@ function VotingUI:destroyVotingInterface()
 		self.voteFrame = nil
 		self.countdownLabel = nil
 		self.voteButtons = {}
+		self.selectedPlayer = nil
+		self.hasVoted = false
 	end
 end
 
 -- Initialize the VotingUI
 local votingUI = VotingUI.new()
 
--- Listen for game state changes
 Remotes.GameStateChanged.OnClientEvent:Connect(function(newState)
 	if newState == "Voting" then
 		votingUI:activate()
 	else
 		votingUI:deactivate()
 	end
-end) 
+end)
+
+-- Removed live vote counts for anonymity 

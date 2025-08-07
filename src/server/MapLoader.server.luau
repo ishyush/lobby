@@ -12,11 +12,14 @@ local function createSimpleMap()
 	school.Name = "School"
 	school.Parent = workspace
 	
+	-- Raise offset to avoid z-fighting with studio floor
+	local yOffset = 3
+	
 	-- Create floor
 	local floor = Instance.new("Part")
 	floor.Name = "Floor"
 	floor.Size = Vector3.new(100, 1, 100)
-	floor.Position = Vector3.new(0, -0.5, 0)
+	floor.Position = Vector3.new(0, yOffset - 0.5, 0)
 	floor.Anchored = true
 	floor.Material = Enum.Material.Concrete
 	floor.Color = Color3.fromRGB(200, 200, 200)
@@ -25,13 +28,13 @@ local function createSimpleMap()
 	-- Create walls
 	local walls = {
 		-- North wall
-		{Position = Vector3.new(0, 10, -50), Size = Vector3.new(100, 20, 2)},
+		{Position = Vector3.new(0, yOffset + 10, -50), Size = Vector3.new(100, 20, 2)},
 		-- South wall
-		{Position = Vector3.new(0, 10, 50), Size = Vector3.new(100, 20, 2)},
+		{Position = Vector3.new(0, yOffset + 10, 50), Size = Vector3.new(100, 20, 2)},
 		-- East wall
-		{Position = Vector3.new(50, 10, 0), Size = Vector3.new(2, 20, 100)},
+		{Position = Vector3.new(50, yOffset + 10, 0), Size = Vector3.new(2, 20, 100)},
 		-- West wall
-		{Position = Vector3.new(-50, 10, 0), Size = Vector3.new(2, 20, 100)},
+		{Position = Vector3.new(-50, yOffset + 10, 0), Size = Vector3.new(2, 20, 100)},
 	}
 	
 	for i, wallData in pairs(walls) do
@@ -45,20 +48,20 @@ local function createSimpleMap()
 		wall.Parent = school
 	end
 	
-	-- Create spawn points
+	-- Create spawn points (raised)
 	local spawnPoints = {
-		Vector3.new(-30, 5, -30),
-		Vector3.new(-20, 5, -30),
-		Vector3.new(-10, 5, -30),
-		Vector3.new(10, 5, -30),
-		Vector3.new(20, 5, -30),
-		Vector3.new(30, 5, -30),
-		Vector3.new(-30, 5, 30),
-		Vector3.new(-20, 5, 30),
-		Vector3.new(-10, 5, 30),
-		Vector3.new(10, 5, 30),
-		Vector3.new(20, 5, 30),
-		Vector3.new(30, 5, 30),
+		Vector3.new(-30, yOffset + 5, -30),
+		Vector3.new(-20, yOffset + 5, -30),
+		Vector3.new(-10, yOffset + 5, -30),
+		Vector3.new(10, yOffset + 5, -30),
+		Vector3.new(20, yOffset + 5, -30),
+		Vector3.new(30, yOffset + 5, -30),
+		Vector3.new(-30, yOffset + 5, 30),
+		Vector3.new(-20, yOffset + 5, 30),
+		Vector3.new(-10, yOffset + 5, 30),
+		Vector3.new(10, yOffset + 5, 30),
+		Vector3.new(20, yOffset + 5, 30),
+		Vector3.new(30, yOffset + 5, 30),
 	}
 	
 	for i, spawnPos in pairs(spawnPoints) do

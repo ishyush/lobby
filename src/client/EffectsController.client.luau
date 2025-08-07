@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
+local RunService = game:GetService("RunService")
 
 local Settings = require(ReplicatedStorage.Shared.Settings)
 local Remotes = require(ReplicatedStorage.Remotes.Remotes)
@@ -18,23 +19,37 @@ local localPlayer = Players.LocalPlayer
 local EffectsController = {}
 EffectsController.__index = EffectsController
 
+-- Cartoon puff sprite sets (replace with custom assets when available)
+local FART_SPRITE_SETS: {{string}} = {
+	{ "rbxassetid://241629037", "rbxassetid://241629037", "rbxassetid://241629037" },
+	{ "rbxassetid://241629037", "rbxassetid://241629037" },
+	{ "rbxassetid://241629037" },
+}
+
+local function chooseSpriteSet(): {string}
+	return FART_SPRITE_SETS[math.random(1, #FART_SPRITE_SETS)]
+end
+
 function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
 	
 	self.activeEffects = {}
 	self.playerRole = nil -- updated via RoleAssigned remote
+	self.speakerActive = false -- if true, mute spider-sense cues
 	
 	return self
 end
 
 function EffectsController:onFartBroadcast(position)
 	print("Playing fart effect at position:", position)
-	-- Play directional fart sound
-	self:playFartSound(position)
+	-- Play directional fart sound (muted if speaker active)
+	if not self.speakerActive then
+		self:playFartSound(position)
+	end
 	-- Create fart cloud visual & prompt
 	self:createFartCloudEffect(position)
-	-- For every player except the farter, create an immediate spider-sense highlight
-	if self.playerRole ~= "Farter" then
+	-- For every player except the farter, create an immediate spider-sense highlight unless masked by speaker
+	if self.playerRole ~= "Farter" and not self.speakerActive then
 		self:createSpiderSenseEffect(position)
 	end
 end
@@ -169,29 +184,144 @@ function EffectsController:createSpiderSenseEffect(fartPosition)
 	end
 end
 
--- Creates an expanding fart cloud dome (10x10 studs) and attaches a ProximityPrompt
+-- Internal: spawn one sprite puff layer and animate it
+function EffectsController:_spawnSpritePuff(root: BasePart, layerIndex: number)
+	local frames = chooseSpriteSet()
+	local life = 1.1 + math.random() * 0.3
+	local fps = 10 + math.random(0, 5)
+	local startSizePx = 90 + math.random(0, 40)
+	local endSizePx = startSizePx + 80 + math.random(0, 50)
+	local startTransparency = 0.05
+	local endTransparency = 1
+	local rotationSpeed = (math.random() < 0.5 and -1 or 1) * (15 + math.random() * 30)
+	local startRotation = math.random(-15, 15)
+	local offsetStuds = Vector3.new((math.random() - 0.5) * 0.8, (math.random() - 0.5) * 0.3, (math.random() - 0.5) * 0.8)
+
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "FartPuffLayer" .. tostring(layerIndex)
+	gui.Size = UDim2.fromOffset(startSizePx, startSizePx)
+	gui.StudsOffset = offsetStuds
+	gui.AlwaysOnTop = true
+	gui.LightInfluence = 0
+	gui.MaxDistance = 150
+	gui.Parent = root
+
+	local img = Instance.new("ImageLabel")
+	img.BackgroundTransparency = 1
+	img.Size = UDim2.fromScale(1, 1)
+	img.Image = frames[1]
+	img.ImageColor3 = Color3.fromRGB(140 + math.random(0,25), 255, 140 + math.random(0,25))
+	img.ImageTransparency = startTransparency
+	img.Rotation = startRotation
+	img.Parent = gui
+
+	-- animate scale
+	TweenService:Create(gui, TweenInfo.new(life * 0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = UDim2.fromOffset(endSizePx, endSizePx)
+	}):Play()
+	-- animate fade
+	TweenService:Create(img, TweenInfo.new(life, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+		ImageTransparency = endTransparency
+	}):Play()
+
+	-- frame cycling and rotation drift
+	local running = true
+	local hbConn
+	local frameIdx = 1
+	local frameAccumulator = 0
+	hbConn = RunService.Heartbeat:Connect(function(dt)
+		if not running then return end
+		-- rotate slowly
+		img.Rotation += rotationSpeed * dt
+		-- cycle frames
+		frameAccumulator += dt
+		if frameAccumulator >= (1 / fps) then
+			frameAccumulator -= (1 / fps)
+			frameIdx += 1
+			if frameIdx > #frames then frameIdx = 1 end
+			img.Image = frames[frameIdx]
+		end
+	end)
+
+	-- cleanup
+	spawn(function()
+		wait(life)
+		running = false
+		if hbConn then hbConn:Disconnect() end
+		if gui then gui:Destroy() end
+	end)
+end
+
+-- Creates an expanding fart cloud dome built from spherical cloud blobs and attaches a ProximityPrompt
 function EffectsController:createFartCloudEffect(position)
 	local Settings = require(ReplicatedStorage.Shared.Settings)
-	-- Part to represent cloud collision (client-side visual)
-	local cloudPart = Instance.new("Part")
-	cloudPart.Anchored = true
-	cloudPart.CanCollide = false
-	cloudPart.CanQuery = false
-	cloudPart.Transparency = 0.4 -- semi-visible
-	cloudPart.Color = Color3.fromRGB(120,255,120)
-	cloudPart.Material = Enum.Material.Neon
-	cloudPart.Shape = Enum.PartType.Ball
-	cloudPart.Size = Vector3.new(0,0,0)
-	cloudPart.Position = position
-	cloudPart.Name = "FartCloud"
-	cloudPart.Parent = workspace
+	
+	-- Invisible root part for prompt and timing
+	local cloudRoot = Instance.new("Part")
+	cloudRoot.Anchored = true
+	cloudRoot.CanCollide = false
+	cloudRoot.CanQuery = false
+	cloudRoot.Transparency = 1
+	cloudRoot.Position = position
+	cloudRoot.Name = "FartCloudRoot"
+	cloudRoot.Parent = workspace
 
-	-- Explosion tween to size 10x10x10
-	local targetSize = Vector3.new(Settings.FartCloudRadius*2, Settings.FartCloudRadius*2, Settings.FartCloudRadius*2)
-	local tween = TweenService:Create(cloudPart, TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {Size = targetSize})
-	tween:Play()
+	-- Build a cloud-like dome from multiple sphere blobs (front-facing bias)
+	local blobs = {}
+	local radius = Settings.FartCloudRadius
+	local numRings = 3
+	local blobsPerRing = {4, 6, 8}
+	local ringHeights = {0.2, 0.6, 1.0} -- normalized height multiplier
+	for r = 1, numRings do
+		local ring = Instance.new("Folder")
+		ring.Name = "Ring" .. r
+		ring.Parent = cloudRoot
+		local ringRadius = (radius * 0.4) + (r-1) * (radius * 0.22)
+		for i = 1, blobsPerRing[r] do
+			local angle = (i / blobsPerRing[r]) * math.pi * 2
+			local blob = Instance.new("Part")
+			blob.Name = "CloudBlob"
+			blob.Shape = Enum.PartType.Ball
+			blob.Anchored = true
+			blob.CanCollide = false
+			blob.Color = Color3.fromRGB(160, 255, 160)
+			blob.Material = Enum.Material.Neon
+			blob.Transparency = 0.3
+			local baseSize = radius * 0.7 + math.random() * (radius * 0.3)
+			blob.Size = Vector3.new(baseSize, baseSize, baseSize)
+			local offset = Vector3.new(math.cos(angle) * ringRadius, ringHeights[r] * radius * 0.5, math.sin(angle) * ringRadius)
+			blob.CFrame = CFrame.new(position + offset)
+			blob.Parent = ring
+			table.insert(blobs, blob)
+		end
+	end
 
-	-- Optional greenish smoke particles for visual flair
+	-- Center dome cap
+	for i=1,3 do
+		local cap = Instance.new("Part")
+		cap.Name = "CloudCap"
+		cap.Shape = Enum.PartType.Ball
+		cap.Anchored = true
+		cap.CanCollide = false
+		cap.Color = Color3.fromRGB(160, 255, 160)
+		cap.Material = Enum.Material.Neon
+		cap.Transparency = 0.25
+		local size = radius * (0.9 + math.random() * 0.2)
+		cap.Size = Vector3.new(size, size, size)
+		cap.CFrame = CFrame.new(position + Vector3.new((math.random()-0.5)*radius*0.2, radius*0.5 + math.random()*radius*0.2, (math.random()-0.5)*radius*0.2))
+		cap.Parent = cloudRoot
+		table.insert(blobs, cap)
+	end
+
+	-- Animate slight growth and fade
+	for _, blob in ipairs(blobs) do
+		local targetSize = blob.Size * 1.25
+		TweenService:Create(blob, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+			Size = targetSize
+		}):Play()
+	end
+
+	-- Subtle particles for extra depth
 	self:createFartParticles(position)
 
 	-- ProximityPrompt for starting investigation (non-farters)
@@ -199,22 +329,31 @@ function EffectsController:createFartCloudEffect(position)
 	prompt.ActionText = "Investigate"
 	prompt.ObjectText = "Fart Cloud"
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.HoldDuration = 1.5
+	prompt.HoldDuration = 1.2
 	prompt.RequiresLineOfSight = false
-	prompt.Parent = cloudPart
+	prompt.Parent = cloudRoot
 
 	prompt.Triggered:Connect(function(player)
-		-- Only local player should fire the remote to reduce duplicate network calls
 		if player ~= Players.LocalPlayer then return end
 		local Remotes = require(ReplicatedStorage.Remotes.Remotes)
 		Remotes.StartInvestigation:FireServer()
 	end)
 
-	-- Cleanup after cloud duration
+	-- Fade out over the lifetime and cleanup
 	spawn(function()
-		wait(Settings.FartCloudDuration)
-		if cloudPart.Parent then
-			cloudPart:Destroy()
+		local lifetime = Settings.FartCloudDuration
+		local steps = 20
+		for s = 1, steps do
+			local alpha = s/steps
+			for _, blob in ipairs(blobs) do
+				if blob and blob.Parent then
+					blob.Transparency = 0.25 + alpha * 0.7
+				end
+			end
+			wait(lifetime/steps)
+		end
+		if cloudRoot and cloudRoot.Parent then
+			cloudRoot:Destroy()
 		end
 	end)
 end
@@ -234,25 +373,24 @@ function EffectsController:createFartParticles(position)
 	
 	-- Configure particle properties
 	particleEmitter.Texture = "rbxassetid://241629037" -- Smoke texture
-	particleEmitter.Lifetime = NumberRange.new(2, 4)
-	particleEmitter.Rate = 150
-	particleEmitter.Speed = NumberRange.new(5, 15)
+	particleEmitter.Lifetime = NumberRange.new(0.8, 1.4)
+	particleEmitter.Rate = 120
+	particleEmitter.Speed = NumberRange.new(6, 14)
 	particleEmitter.SpreadAngle = Vector2.new(180, 180)
-	particleEmitter.Transparency = NumberSequence.new(0, 1)
-	particleEmitter.Size = NumberSequence.new(0.5, 2)
-	particleEmitter.Color = ColorSequence.new(Color3.fromRGB(100,255,100))
+	particleEmitter.Transparency = NumberSequence.new(0.2, 1)
+	particleEmitter.Size = NumberSequence.new(0.5, 1.6)
+	particleEmitter.Color = ColorSequence.new(Color3.fromRGB(120,255,120))
 	
 	-- Start emitting
 	particleEmitter.Enabled = true
 	
-	-- Stop emitting after a short time
+	-- Stop emitting quickly; let particles dissipate
 	spawn(function()
-		wait(1)
+		wait(0.25)
 		particleEmitter.Enabled = false
-		
 		-- Clean up after particles finish
-		wait(4)
-		particlePart:Destroy()
+		wait(1.6)
+		if particlePart then particlePart:Destroy() end
 	end)
 end
 
@@ -349,4 +487,9 @@ end)
 -- Listen for role assignment so we know if local player is the Farter
 Remotes.RoleAssigned.OnClientEvent:Connect(function(role)
 	effectsController.playerRole = role
+end)
+
+-- Speaker masking toggle (if a map speaker system is active, this can be driven from server)
+Remotes.SpeakerStateChanged.OnClientEvent:Connect(function(isActive)
+	effectsController.speakerActive = isActive and true or false
 end) 

@@ -5,6 +5,8 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 local Settings = require(ReplicatedStorage.Shared.Settings)
 local Remotes = require(ReplicatedStorage.Remotes.Remotes)
@@ -16,7 +18,7 @@ function SnifferController.new()
 	local self = setmetatable({}, SnifferController)
 	
 	self.isActive = false
-	self.canSniff = false -- becomes true during Investigation
+	self.canSniff = false -- becomes true when role active
 	self.sniffCooldown = 3 -- seconds between sniffs
 	self.lastSniffTime = 0
 	
@@ -25,13 +27,26 @@ end
 
 function SnifferController:activate()
 	self.isActive = true
+	self.canSniff = true
 	print("SnifferController activated")
+	self:createSniffUI()
+	self:_createSniffPrompts()
+	-- Optional: E key sniff while aiming at a player
+	self._inputConn = UserInputService.InputBegan:Connect(function(input, gp)
+		if gp or not self.isActive or not self.canSniff then return end
+		if input.KeyCode == Enum.KeyCode.E then
+			self:handlePlayerClick(nil)
+		end
+	end)
 end
 
 function SnifferController:deactivate()
 	self.isActive = false
 	self.canSniff = false
 	print("SnifferController deactivated")
+	self:_destroySniffPrompts()
+	self:destroySniffUI()
+	if self._inputConn then self._inputConn:Disconnect() self._inputConn = nil end
 end
 
 function SnifferController:enableSniffing()
@@ -53,7 +68,7 @@ function SnifferController:onSniffResult(targetPlayer, isSmelly)
 	
 	print("Sniff result for", targetPlayer.Name, ":", resultText)
 	
-	-- Show result UI
+	-- Show result UI with small pop animation
 	self:showSniffResult(targetPlayer.Name, resultText, resultColor)
 	
 	-- Play sound effect
@@ -83,10 +98,22 @@ function SnifferController:showSniffResult(playerName, result, color)
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.Parent = resultFrame
 	
+	-- Pop animation
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = 0.8
+	uiScale.Parent = resultFrame
+	TweenService:Create(uiScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+	
 	-- Auto-destroy after duration
 	spawn(function()
 		wait(Settings.SniffEffectDuration)
-		resultFrame:Destroy()
+		if resultFrame then
+			local tween = TweenService:Create(resultFrame, TweenInfo.new(0.2), {BackgroundTransparency = 1})
+			tween:Play()
+			tween.Completed:Connect(function()
+				resultFrame:Destroy()
+			end)
+		end
 	end)
 end
 
@@ -107,84 +134,83 @@ function SnifferController:playSniffSound(isSmelly)
 	end)
 end
 
-function SnifferController:handlePlayerClick(player)
-	if not self.canSniff or not self.isActive then
-		return
-	end
-	
-	local currentTime = tick()
-	if currentTime - self.lastSniffTime < self.sniffCooldown then
-		print("Sniff on cooldown")
-		return
-	end
-	
-	-- Call server to sniff player
-	local success, result = pcall(function()
-		return Remotes.SniffPlayer:InvokeServer(player)
-	end)
+-- Only sniff the player under the mouse cursor when triggered
+function SnifferController:_getMouseTargetPlayer(): Player?
+	local localPlayer = Players.LocalPlayer
+	local mouse = localPlayer:GetMouse()
+	local target = mouse.Target
+	if not target then return nil end
+	local model = target:FindFirstAncestorOfClass("Model")
+	if not model then return nil end
+	local plr = Players:GetPlayerFromCharacter(model)
+	return plr
+end
 
+function SnifferController:handlePlayerClick(_targetPlayer)
+	if not self.canSniff or not self.isActive then return end
+	local currentTime = tick()
+	if currentTime - self.lastSniffTime < self.sniffCooldown then return end
+	
+	-- resolve to cursor target only
+	local targetPlayer = self:_getMouseTargetPlayer()
+	if not targetPlayer or targetPlayer == Players.LocalPlayer then return end
+	
+	local success, result = pcall(function()
+		return Remotes.SniffPlayer:InvokeServer(targetPlayer)
+	end)
 	if success then
 		self.lastSniffTime = currentTime
-		self:onSniffResult(player, result)
+		self:onSniffResult(targetPlayer, result)
 	else
 		print("Failed to sniff player:", result)
 	end
 end
 
--- ProximityPrompt based sniffing -----------------------------------------
-
+-- ProximityPrompt based sniffing (always available while Sniffer)
 function SnifferController:_createSniffPrompts()
-    local localPlayer = Players.LocalPlayer
-
-    local function addPromptToCharacter(char, targetPlayer)
-        if not self.canSniff then return end
-        if char and char:FindFirstChild("HumanoidRootPart") then
-            local existing = char.HumanoidRootPart:FindFirstChild("SniffPrompt")
-            if existing then existing:Destroy() end
-
-            local prompt = Instance.new("ProximityPrompt")
-            prompt.Name = "SniffPrompt"
-            prompt.ActionText = "Sniff"
-            prompt.ObjectText = targetPlayer.Name
-            prompt.KeyboardKeyCode = Enum.KeyCode.E
-            prompt.HoldDuration = 1.0
-            prompt.RequiresLineOfSight = false
-            prompt.MaxActivationDistance = 8
-            prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
-            prompt.Parent = char.HumanoidRootPart
-
-            prompt.Triggered:Connect(function(player)
-                if player ~= localPlayer then return end
-                self:handlePlayerClick(targetPlayer)
-            end)
-        end
-    end
-
-    -- helper to attach for current + future spawns
-    local function attachLifecycle(plr: Player)
-        if plr == localPlayer then return end
-        addPromptToCharacter(plr.Character, plr)
-        plr.CharacterAdded:Connect(function(char)
-            addPromptToCharacter(char, plr)
-        end)
-    end
-
-    -- existing players
-    for _, p in ipairs(Players:GetPlayers()) do
-        attachLifecycle(p)
-    end
-
-    -- future players
-    Players.PlayerAdded:Connect(attachLifecycle)
+	local localPlayer = Players.LocalPlayer
+	local function addPromptToCharacter(char, targetPlayer)
+		if not self.canSniff then return end
+		if char and char:FindFirstChild("HumanoidRootPart") then
+			local existing = char.HumanoidRootPart:FindFirstChild("SniffPrompt")
+			if existing then existing:Destroy() end
+			local prompt = Instance.new("ProximityPrompt")
+			prompt.Name = "SniffPrompt"
+			prompt.ActionText = "Sniff"
+			prompt.ObjectText = targetPlayer.Name
+			prompt.KeyboardKeyCode = Enum.KeyCode.E
+			prompt.HoldDuration = 0.8
+			prompt.RequiresLineOfSight = false
+			prompt.MaxActivationDistance = 10
+			prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
+			prompt.Parent = char.HumanoidRootPart
+			
+			prompt.Triggered:Connect(function(player)
+				if player ~= localPlayer then return end
+				self:handlePlayerClick(targetPlayer)
+			end)
+		end
+	end
+	local function attachLifecycle(plr: Player)
+		if plr == localPlayer then return end
+		addPromptToCharacter(plr.Character, plr)
+		plr.CharacterAdded:Connect(function(char)
+			addPromptToCharacter(char, plr)
+		end)
+	end
+	for _, p in ipairs(Players:GetPlayers()) do
+		attachLifecycle(p)
+	end
+	Players.PlayerAdded:Connect(attachLifecycle)
 end
 
 function SnifferController:_destroySniffPrompts()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            local prompt = p.Character.HumanoidRootPart:FindFirstChild("SniffPrompt")
-            if prompt then prompt:Destroy() end
-        end
-    end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+			local prompt = p.Character.HumanoidRootPart:FindFirstChild("SniffPrompt")
+			if prompt then prompt:Destroy() end
+		end
+	end
 end
 
 function SnifferController:createSniffUI()
@@ -220,26 +246,15 @@ function SnifferController:destroySniffUI()
 	end
 end
 
--- Initialize the SnifferController
+-- Initialize
 local snifferController = SnifferController.new()
-
--- Listen for role assignment
 Remotes.RoleAssigned.OnClientEvent:Connect(function(role)
 	if role == "Sniffer" then
 		snifferController:activate()
-		snifferController:createSniffUI()
-		-- prompts will be created during Investigation
 	else
 		snifferController:deactivate()
-		snifferController:destroySniffUI()
 	end
 end)
-
--- Listen for game state changes
 Remotes.GameStateChanged.OnClientEvent:Connect(function(newState)
-	if newState == "Investigation" then
-		snifferController:enableSniffing()
-	else
-		snifferController:disableSniffing()
-	end
+	-- Sniffer prompts remain active regardless of state
 end) 

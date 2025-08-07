@@ -5,6 +5,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
+local TweenService = game:GetService("TweenService")
 
 local Settings = require(ReplicatedStorage.Shared.Settings)
 local Remotes = require(ReplicatedStorage.Remotes.Remotes)
@@ -106,6 +107,174 @@ function GameController:bindRemotes()
 	Remotes.PlayerVotedOut.OnClientEvent:Connect(function(player)
 		self:onPlayerVotedOut(player)
 	end)
+
+	-- Investigation events
+	Remotes.InvestigationStarted.OnClientEvent:Connect(function(starterPlayer)
+		self:showInvestigationPhone(starterPlayer)
+	end)
+	Remotes.InvestigationChatMessage.OnClientEvent:Connect(function(sender, message)
+		self:appendInvestigationMessage(sender, message)
+	end)
+
+	-- Task progress events
+	Remotes.TaskProgressUpdated.OnClientEvent:Connect(function(player, taskId)
+		self:onTaskProgress(player, taskId)
+	end)
+end
+
+-- Investigation Phone UI ---------------------------------------------------
+function GameController:showInvestigationPhone(starterPlayer)
+	local screenGui = self.uiElements.screenGui
+	if not screenGui then return end
+	self:hideInvestigationPhone()
+	
+	local phone = Instance.new("Frame")
+	phone.Name = "InvestigationPhone"
+	phone.Size = UDim2.new(0, 360, 0, 540)
+	phone.Position = UDim2.new(0.5, -180, 0.5, -270)
+	phone.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	phone.BorderSizePixel = 0
+	phone.Parent = screenGui
+	
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 24)
+	corner.Parent = phone
+	
+	local bezel = Instance.new("UIStroke")
+	bezel.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	bezel.Thickness = 2
+	bezel.Color = Color3.fromRGB(60, 60, 60)
+	bezel.Parent = phone
+	
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 64)
+	header.BackgroundColor3 = Color3.fromRGB(30,30,30)
+	header.Parent = phone
+	local headerCorner = Instance.new("UICorner")
+	headerCorner.CornerRadius = UDim.new(0, 24)
+	headerCorner.Parent = header
+	
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, -20, 1, 0)
+	title.Position = UDim2.new(0, 10, 0, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "Discussion Started by " .. (starterPlayer and starterPlayer.Name or "Unknown")
+	title.TextColor3 = Color3.fromRGB(255,255,255)
+	title.TextScaled = true
+	title.Font = Enum.Font.GothamBold
+	title.Parent = header
+	
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.Size = UDim2.new(1, -20, 0, 30)
+	subtitle.Position = UDim2.new(0, 10, 0, 34)
+	subtitle.BackgroundTransparency = 1
+	subtitle.Text = "Discuss with others: who do you think is the Farter?"
+	subtitle.TextColor3 = Color3.fromRGB(200,200,200)
+	subtitle.TextScaled = true
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.Parent = header
+	
+	local chatFrame = Instance.new("ScrollingFrame")
+	chatFrame.Name = "Chat"
+	chatFrame.Size = UDim2.new(1, -20, 1, -140)
+	chatFrame.Position = UDim2.new(0, 10, 0, 74)
+	chatFrame.BackgroundTransparency = 1
+	chatFrame.CanvasSize = UDim2.new(0,0,0,0)
+	chatFrame.ScrollBarThickness = 6
+	chatFrame.Parent = phone
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0,6)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = chatFrame
+	layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		chatFrame.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+		chatFrame.CanvasPosition = Vector2.new(0, math.max(0, layout.AbsoluteContentSize.Y - chatFrame.AbsoluteWindowSize.Y))
+	end)
+	
+	local inputBox = Instance.new("TextBox")
+	inputBox.Name = "Input"
+	inputBox.Size = UDim2.new(1, -120, 0, 44)
+	inputBox.Position = UDim2.new(0, 10, 1, -54)
+	inputBox.BackgroundColor3 = Color3.fromRGB(35,35,35)
+	inputBox.TextColor3 = Color3.fromRGB(255,255,255)
+	inputBox.PlaceholderText = "Type your thoughts..."
+	inputBox.TextScaled = true
+	inputBox.Font = Enum.Font.Gotham
+	inputBox.Parent = phone
+	local inputCorner = Instance.new("UICorner")
+	inputCorner.CornerRadius = UDim.new(0, 12)
+	inputCorner.Parent = inputBox
+	
+	local sendBtn = Instance.new("TextButton")
+	sendBtn.Name = "Send"
+	sendBtn.Size = UDim2.new(0, 90, 0, 44)
+	sendBtn.Position = UDim2.new(1, -100, 1, -54)
+	sendBtn.BackgroundColor3 = Color3.fromRGB(60,120,255)
+	sendBtn.TextColor3 = Color3.fromRGB(255,255,255)
+	sendBtn.Text = "Send"
+	sendBtn.TextScaled = true
+	sendBtn.Font = Enum.Font.GothamBold
+	sendBtn.Parent = phone
+	local sendCorner = Instance.new("UICorner")
+	sendCorner.CornerRadius = UDim.new(0, 12)
+	sendCorner.Parent = sendBtn
+	
+	sendBtn.MouseButton1Click:Connect(function()
+		local text = inputBox.Text
+		if text and #text > 0 then
+			Remotes.InvestigationChatMessage:FireServer(text)
+			inputBox.Text = ""
+		end
+	end)
+	
+	-- animated entry
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = 0.94
+	uiScale.Parent = phone
+	TweenService:Create(uiScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+	
+	self.uiElements.investigationPhone = phone
+end
+
+function GameController:appendInvestigationMessage(sender, message)
+	local phone = self.uiElements.investigationPhone
+	if not phone then return end
+	local chatFrame = phone:FindFirstChild("Chat")
+	if not chatFrame then return end
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -10, 0, 34)
+	row.BackgroundTransparency = 1
+	row.Parent = chatFrame
+	
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(0, 120, 1, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = sender and sender.Name or "?"
+	nameLabel.TextColor3 = Color3.fromRGB(200,200,255)
+	nameLabel.TextScaled = true
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+	
+	local msgLabel = Instance.new("TextLabel")
+	msgLabel.Size = UDim2.new(1, -120, 1, 0)
+	msgLabel.Position = UDim2.new(0, 120, 0, 0)
+	msgLabel.BackgroundTransparency = 1
+	msgLabel.Text = message
+	msgLabel.TextXAlignment = Enum.TextXAlignment.Left
+	msgLabel.TextColor3 = Color3.fromRGB(230,230,230)
+	msgLabel.TextScaled = true
+	msgLabel.Font = Enum.Font.Gotham
+	msgLabel.Parent = row
+end
+
+function GameController:hideInvestigationPhone()
+	if self.uiElements.investigationPhone then
+		self.uiElements.investigationPhone:Destroy()
+		self.uiElements.investigationPhone = nil
+	end
 end
 
 function GameController:onGameStateChanged(newState, winnerRole)
@@ -118,6 +287,7 @@ function GameController:onGameStateChanged(newState, winnerRole)
 	if newState == "RoundEnd" then
 		-- Clear any leftover phase-specific UI
 		self:disableAllPhases()
+		self:hideInvestigationPhone()
 
 		-- Show winner message
 		self:showRoundResult(winnerRole)
@@ -134,6 +304,11 @@ function GameController:onGameStateChanged(newState, winnerRole)
 	if self.uiElements.stateLabel then
 		self.uiElements.stateLabel.Text = newState
 		print("Updated state label to:", newState)
+	end
+
+	-- Hide phone if leaving Investigation
+	if newState ~= "Investigation" then
+		self:hideInvestigationPhone()
 	end
 
 	-- Start phase timer
@@ -282,20 +457,20 @@ function GameController:enableFartingPhase()
 		timerLabel.Size = UDim2.new(0, 100, 0, 30)
 		timerLabel.Position = UDim2.new(0.5, -50, 0.6, 0)
 		timerLabel.BackgroundTransparency = 1
-		timerLabel.Text = "10"
+		timerLabel.Text = tostring(Settings.FartWindowDuration)
 		timerLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 		timerLabel.TextScaled = true
 		timerLabel.Font = Enum.Font.GothamBold
 		timerLabel.Parent = self.uiElements.screenGui
 		
 		-- Handle fart button click
-		local Settings = require(ReplicatedStorage.Shared.Settings)
+		local SettingsModule = require(ReplicatedStorage.Shared.Settings)
 		fartButton.MouseButton1Click:Connect(function()
 			if fartButton:GetAttribute("OnCooldown") then return end
 			Remotes.FartAction:FireServer()
 			fartButton:SetAttribute("OnCooldown", true)
 			fartButton.BackgroundColor3 = Color3.fromRGB(100,100,100)
-			local cooldown = Settings.FartCooldown
+			local cooldown = SettingsModule.FartCooldown
 			spawn(function()
 				local start = tick()
 				while tick() - start < cooldown and fartButton.Parent do
@@ -307,6 +482,16 @@ function GameController:enableFartingPhase()
 					fartButton:SetAttribute("OnCooldown", false)
 					fartButton.BackgroundColor3 = Color3.fromRGB(255,0,0)
 					fartButton.Text = "FART!"
+					-- Pulse effect to indicate ready
+					spawn(function()
+						for i=1,6 do
+							if not fartButton.Parent or fartButton:GetAttribute("OnCooldown") then break end
+							TweenService:Create(fartButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(255, 80, 80)}):Play()
+							wait(0.2)
+							TweenService:Create(fartButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(255, 0, 0)}):Play()
+							wait(0.2)
+						end
+					end)
 				end
 			end)
 		end)
@@ -342,7 +527,7 @@ function GameController:enableInvestigationPhase()
 		sniffLabel.Position = UDim2.new(0.5, -150, 0.75, 0)
 		sniffLabel.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
 		sniffLabel.BackgroundTransparency = 0.5
-		sniffLabel.Text = "Click on players to sniff them!"
+		sniffLabel.Text = "Sniff players nearby!"
 		sniffLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 		sniffLabel.TextScaled = true
 		sniffLabel.Font = Enum.Font.GothamBold
@@ -414,6 +599,21 @@ function GameController:startPhaseTimer(phase)
 				local remaining = duration - (tick() - startTime)
 				if self.uiElements.phaseTimer then
 					self.uiElements.phaseTimer.Text = phase .. ": " .. math.ceil(remaining) .. "s"
+					-- Visual warning in final 10 seconds
+					if remaining <= 10 then
+						self.uiElements.phaseTimer.TextColor3 = Color3.fromRGB(255, 80, 80)
+						-- quick pulse
+						local uiScale = self.uiElements.phaseTimer:FindFirstChild("UIScale") or Instance.new("UIScale")
+						uiScale.Parent = self.uiElements.phaseTimer
+						uiScale.Scale = 1
+						TweenService:Create(uiScale, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.05}):Play()
+						spawn(function()
+							wait(0.15)
+							TweenService:Create(uiScale, TweenInfo.new(0.12), {Scale = 1}):Play()
+						end)
+					else
+						self.uiElements.phaseTimer.TextColor3 = Color3.fromRGB(255, 255, 255)
+					end
 				end
 				wait(0.1)
 			end
@@ -485,10 +685,18 @@ function GameController:onLobbyCountdown(secondsRemaining)
 		self.uiElements.lobbyCountdownLabel = lbl
 	end
 
-	-- Update text
+	-- Update text with small pop animation
 	if self.uiElements.lobbyCountdownLabel then
 		if secondsRemaining > 0 then
 			self.uiElements.lobbyCountdownLabel.Text = "Game starts in " .. secondsRemaining .. "s"
+			local uiScale = self.uiElements.lobbyCountdownLabel:FindFirstChild("UIScale") or Instance.new("UIScale")
+			uiScale.Parent = self.uiElements.lobbyCountdownLabel
+			uiScale.Scale = 1
+			TweenService:Create(uiScale, TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.05}):Play()
+			spawn(function()
+				wait(0.12)
+				TweenService:Create(uiScale, TweenInfo.new(0.1), {Scale = 1}):Play()
+			end)
 		else
 			self.uiElements.lobbyCountdownLabel:Destroy()
 			self.uiElements.lobbyCountdownLabel = nil
@@ -511,5 +719,73 @@ function GameController:clearFartUI()
 	if self.uiElements.timerLabel then
 		self.uiElements.timerLabel:Destroy()
 		self.uiElements.timerLabel = nil
+	end
+end 
+
+function GameController:onTaskProgress(player, taskId)
+	if player ~= Players.LocalPlayer then return end
+	local screenGui = self.uiElements.screenGui
+	if not screenGui then return end
+	
+	-- create container if needed
+	if not self.uiElements.taskFrame then
+		local taskFrame = Instance.new("Frame")
+		taskFrame.Name = "TaskFrame"
+		taskFrame.Size = UDim2.new(0, 220, 0, 140)
+		taskFrame.Position = UDim2.new(0, 20, 1, -160)
+		taskFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+		taskFrame.BackgroundTransparency = 0.2
+		taskFrame.Parent = screenGui
+		self.uiElements.taskFrame = taskFrame
+	end
+	
+	local container = self.uiElements.taskFrame
+	-- Make or update a row for this taskId
+	local rowName = "Task_" .. tostring(taskId)
+	local row = container:FindFirstChild(rowName)
+	if not row then
+		row = Instance.new("Frame")
+		row.Name = rowName
+		row.Size = UDim2.new(1, -10, 0, 30)
+		row.Position = UDim2.new(0, 5, 0, (#container:GetChildren())*32)
+		row.BackgroundTransparency = 1
+		row.Parent = container
+		
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.Size = UDim2.new(1, -40, 1, 0)
+		label.Position = UDim2.new(0, 0, 0, 0)
+		label.BackgroundTransparency = 1
+		label.Text = "Task " .. tostring(taskId)
+		label.TextColor3 = Color3.fromRGB(230,230,230)
+		label.TextScaled = true
+		label.Font = Enum.Font.Gotham
+		label.Parent = row
+		
+		local check = Instance.new("TextLabel")
+		check.Name = "Check"
+		check.Size = UDim2.new(0, 30, 0, 30)
+		check.Position = UDim2.new(1, -30, 0, 0)
+		check.BackgroundTransparency = 1
+		check.Text = "✗"
+		check.TextColor3 = Color3.fromRGB(200,80,80)
+		check.TextScaled = true
+		check.Font = Enum.Font.GothamBold
+		check.Parent = row
+	end
+	
+	-- Animate to completed state
+	local check = row:FindFirstChild("Check")
+	if check then
+		check.Text = "✓"
+		check.TextColor3 = Color3.fromRGB(80, 200, 120)
+		local uiScale = row:FindFirstChild("UIScale") or Instance.new("UIScale")
+		uiScale.Parent = row
+		uiScale.Scale = 1
+		TweenService:Create(uiScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.08}):Play()
+		spawn(function()
+			wait(0.15)
+			TweenService:Create(uiScale, TweenInfo.new(0.12), {Scale = 1}):Play()
+		end)
 	end
 end 
