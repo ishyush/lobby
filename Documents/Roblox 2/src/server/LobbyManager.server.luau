@@ -296,10 +296,10 @@ Net.StartLobbyGame.OnServerInvoke = function(player: Player, lobbyId: string)
         return { error = "NoPlayers" }
     end
 
-    -- Start 20-second countdown
+    -- Start 5-second countdown
     lobby.starting = true
     writeLobby(lobby)
-    for remaining = 20, 1, -1 do
+    for remaining = 5, 1, -1 do
         Net.LobbyCountdown:FireAllClients(lobby.lobbyId, remaining)
         task.wait(1)
         -- If lobby was deleted during countdown, abort
