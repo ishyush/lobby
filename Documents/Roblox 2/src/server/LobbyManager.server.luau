@@ -16,6 +16,7 @@ export type Lobby = {
     createdAt: number,
     players: {number},
     starting: boolean?,
+    fill: boolean?,
 }
 
 local PRIVATE_SERVER_RESERVATION: {[string]: string} = {}
@@ -71,6 +72,7 @@ local function toSummary(lobby: Lobby)
         playerCount = #lobby.players,
         maxPlayers = Constants.LOBBY_MAX_PLAYERS,
         createdAt = lobby.createdAt,
+        fill = lobby.fill == nil and true or lobby.fill,
     }
 end
 
@@ -150,6 +152,7 @@ Net.CreatePrivateLobby.OnServerInvoke = function(player: Player)
         createdAt = now(),
         players = { player.UserId },
         starting = false,
+        fill = true,
     }
     -- Persist and publish; if MemoryStore fails (e.g., Studio), still return a summary so
     -- the client transitions into the manage page. Join list may not update until store works.
@@ -212,7 +215,27 @@ Net.JoinPrivateLobby.OnServerInvoke = function(player: Player, lobbyId: string)
         table.insert(lobby.players, player.UserId)
         writeLobby(lobby)
     end
-    return toSummary(lobby)
+    -- Return enriched state to the caller so clients can render immediately
+    local enriched = toSummary(lobby)
+    local members = {}
+    for _, userId in lobby.players do
+        local name = (function()
+            local plr = Players:GetPlayerByUserId(userId)
+            if plr then
+                return (plr.DisplayName ~= "" and plr.DisplayName) or plr.Name
+            end
+            local ok, resolvedName = pcall(function()
+                return Players:GetNameFromUserIdAsync(userId)
+            end)
+            if ok then return resolvedName end
+            return ("User %d"):format(userId)
+        end)()
+        table.insert(members, { userId = userId, name = name })
+    end
+    enriched.members = members
+    enriched.isHost = lobby.hostUserId == player.UserId
+    enriched.hostUserId = lobby.hostUserId
+    return enriched
 end
 
 -- Remote: LeavePrivateLobby(lobbyId)
@@ -301,6 +324,7 @@ Net.StartLobbyGame.OnServerInvoke = function(player: Player, lobbyId: string)
         lobbyId = lobby.lobbyId,
         hostUserId = lobby.hostUserId,
         isPrivate = true,
+        fill = lobby.fill == nil and true or lobby.fill,
     }
 
     pcall(function()
@@ -320,17 +344,38 @@ Net.GetLobbyState.OnServerInvoke = function(player: Player, lobbyId: string)
     -- Enrich with player names for UI
     local members = {}
     for _, userId in lobby.players do
-        local plr = Players:GetPlayerByUserId(userId)
-        table.insert(members, {
-            userId = userId,
-            name = plr and (plr.DisplayName ~= "" and plr.DisplayName or plr.Name) or ("User %d"):format(userId),
-        })
+        local name = (function()
+            local plr = Players:GetPlayerByUserId(userId)
+            if plr then
+                return (plr.DisplayName ~= "" and plr.DisplayName) or plr.Name
+            end
+            local ok, resolvedName = pcall(function()
+                return Players:GetNameFromUserIdAsync(userId)
+            end)
+            if ok then return resolvedName end
+            return ("User %d"):format(userId)
+        end)()
+        table.insert(members, { userId = userId, name = name })
     end
     local summary = toSummary(lobby)
     summary.members = members
     summary.isHost = lobby.hostUserId == player.UserId
     summary.hostUserId = lobby.hostUserId
     return summary
+end
+
+-- Remote: SetLobbyFillMode(lobbyId, fill:boolean)
+Net.SetLobbyFillMode.OnServerInvoke = function(player: Player, lobbyId: string, fill: boolean)
+    local lobby = readLobby(lobbyId)
+    if not lobby then
+        return { error = "LobbyNotFound" }
+    end
+    if lobby.hostUserId ~= player.UserId then
+        return { error = "NotHost" }
+    end
+    lobby.fill = fill
+    writeLobby(lobby)
+    return toSummary(lobby)
 end
 
 -- Public matchmaking: simple forward to random public server

@@ -59,6 +59,7 @@ Net.LeavePrivateLobby = getRemoteFunction("LeavePrivateLobby")
 Net.KickFromLobby = getRemoteFunction("KickFromLobby")
 Net.StartLobbyGame = getRemoteFunction("StartLobbyGame")
 Net.GetLobbyState = getRemoteFunction("GetLobbyState")
+Net.SetLobbyFillMode = getRemoteFunction("SetLobbyFillMode")
 
 -- Push updates to lobby members
 Net.LobbyUpdated = getRemoteEvent("LobbyUpdated")

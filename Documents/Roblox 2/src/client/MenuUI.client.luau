@@ -502,10 +502,14 @@ backFromJoinBtn.Position = UDim2.fromScale(0.05, 0.95)
 backFromJoinBtn.Size = UDim2.fromOffset(120, 36)
 backFromJoinBtn.Parent = joinPage
 
+-- Global UI state shared across pages
+local currentLobbyId: string? = nil
+
 local function lobbyRow(item: { [string]: any }): Frame
     local row = create("Frame", { Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 0.08, BackgroundColor3 = Palette.surface }, {
         create("UICorner", { CornerRadius = UDim.new(0, 8) }),
         create("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }),
+        create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), HorizontalAlignment = Enum.HorizontalAlignment.Left, VerticalAlignment = Enum.VerticalAlignment.Center }),
     })
     local nameLabel = create("TextLabel", {
         BackgroundTransparency = 1,
@@ -513,8 +517,6 @@ local function lobbyRow(item: { [string]: any }): Frame
         Font = Enum.Font.GothamBold,
         TextSize = 18,
         TextColor3 = Palette.text,
-        AnchorPoint = Vector2.new(0, 0.5),
-        Position = UDim2.fromScale(0, 0.5),
         Size = UDim2.fromScale(0.6, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -526,15 +528,11 @@ local function lobbyRow(item: { [string]: any }): Frame
         Font = Enum.Font.Gotham,
         TextSize = 16,
         TextColor3 = Palette.textMuted,
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.fromScale(0.88, 0.5),
         Size = UDim2.fromOffset(80, 24),
         TextXAlignment = Enum.TextXAlignment.Right,
     })
     countLabel.Parent = row
     local joinBtn = primaryButton("Join")
-    joinBtn.AnchorPoint = Vector2.new(1, 0.5)
-    joinBtn.Position = UDim2.fromScale(0.98, 0.5)
     joinBtn.Size = UDim2.fromOffset(120, 36)
     joinBtn.Parent = row
     joinBtn.MouseButton1Click:Connect(function()
@@ -542,7 +540,16 @@ local function lobbyRow(item: { [string]: any }): Frame
         if (result :: any).error == nil then
             currentLobbyId = (result :: any).lobbyId
             pageLayout:JumpTo(managePage)
-            refreshManagePage()
+            -- Render immediately from server-enriched summary if provided
+            renderManageFromState(result)
+            -- Retry a few times to overcome any eventual consistency
+            for i = 1, 5 do
+                task.delay(0.2 * i, function()
+                    if currentLobbyId == (result :: any).lobbyId and lobbyModal.Visible and pageLayout.CurrentPage == managePage then
+                        refreshManagePage()
+                    end
+                end)
+            end
         end
     end)
     return row
@@ -552,29 +559,61 @@ end
 local manageTitle = create("TextLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(0.9, 0.12), Text = "Lobby", Font = Enum.Font.GothamBold, TextScaled = true, TextColor3 = Palette.text, TextXAlignment = Enum.TextXAlignment.Center })
 manageTitle.Parent = managePage
 
-local memberList = create("ScrollingFrame", { BackgroundTransparency = 0.08, BackgroundColor3 = Palette.surfaceAlt, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.14), Size = UDim2.fromScale(0.9, 0.6), AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), ScrollBarThickness = 6 }, {
+local memberList = create("ScrollingFrame", { BackgroundTransparency = 0.08, BackgroundColor3 = Palette.surfaceAlt, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.14), Size = UDim2.fromScale(0.9, 0.6), AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), ScrollBarThickness = 6, ZIndex = 1 }, {
     create("UICorner", { CornerRadius = UDim.new(0, 12) }),
     create("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 8) }),
 })
 memberList.Parent = managePage
 
-local actionRow = create("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.95), Size = UDim2.fromScale(0.9, 0.12) }, {
-    create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 12), HorizontalAlignment = Enum.HorizontalAlignment.Center })
+local actionRow = create("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.95), Size = UDim2.fromScale(0.9, 0.12), ZIndex = 2 }, {
+    create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 12), HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center })
 })
 actionRow.Parent = managePage
 
-local startBtn = primaryButton("Play")
+-- Hidden container for host-only controls when viewer is not the host
+local hiddenHostControls = Instance.new("Folder")
+hiddenHostControls.Name = "HiddenHostControls"
+hiddenHostControls.Parent = managePage
+
+local startBtn = primaryButton("Start Game")
 startBtn.Size = UDim2.fromOffset(180, 48)
 startBtn.Parent = actionRow
+startBtn.Visible = false
 
 local leaveBtn = smallButton("Leave Lobby")
 leaveBtn.Size = UDim2.fromOffset(180, 48)
 leaveBtn.Parent = actionRow
+leaveBtn.ZIndex = 3
 
 -- Removed back button on manage screen; players should leave the lobby explicitly
 
--- State
-local currentLobbyId: string? = nil
+local currentFill: boolean = true
+local fillButtonsReady = false
+local fillContainer: Frame = create("Frame", { BackgroundTransparency = 1, Size = UDim2.fromOffset(300, 48) }, {
+    create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), HorizontalAlignment = Enum.HorizontalAlignment.Center })
+})
+fillContainer.Parent = actionRow
+fillContainer.Visible = false
+
+-- By default, move host-only controls out of layout so non-hosts see only the centered Leave button
+startBtn.Parent = hiddenHostControls
+fillContainer.Parent = hiddenHostControls
+local fillBtn = smallButton("Fill")
+fillBtn.Size = UDim2.fromOffset(120, 36)
+fillBtn.Parent = fillContainer
+local noFillBtn = smallButton("No Fill")
+noFillBtn.Size = UDim2.fromOffset(120, 36)
+noFillBtn.Parent = fillContainer
+
+local function updateFillButtonStyles()
+    if currentFill then
+        fillBtn.BackgroundColor3 = Color3.fromRGB(120, 230, 160)
+        noFillBtn.BackgroundColor3 = Color3.fromRGB(210, 210, 220)
+    else
+        fillBtn.BackgroundColor3 = Color3.fromRGB(210, 210, 220)
+        noFillBtn.BackgroundColor3 = Color3.fromRGB(120, 230, 160)
+    end
+end
 local countdownLabel = create("TextLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.86), Size = UDim2.fromScale(0.9, 0.08), Text = "", Font = Enum.Font.GothamBold, TextScaled = true, TextColor3 = Palette.accent })
 countdownLabel.Parent = managePage
 
@@ -589,24 +628,28 @@ function refreshJoinList()
     end
 end
 
-function refreshManagePage()
-    if not currentLobbyId then return end
+local function renderManageFromState(state: any)
     manageTitle.Text = "Lobby"
     for _, child in memberList:GetChildren() do
         if child:IsA("Frame") then child:Destroy() end
     end
-    local state = Net.GetLobbyState:InvokeServer(currentLobbyId :: string)
-    if (state :: any).error then
+    if not state or (state :: any).error then
+        startBtn.Visible = false
+        fillContainer.Visible = false
+        if startBtn.Parent ~= hiddenHostControls then startBtn.Parent = hiddenHostControls end
+        if fillContainer.Parent ~= hiddenHostControls then fillContainer.Parent = hiddenHostControls end
         return
     end
     local isHost = (state :: any).isHost == true
     local hostUserId = (state :: any).hostUserId
     local members = (state :: any).members or {}
+    currentFill = (state :: any).fill ~= false
     manageTitle.Text = string.format("%s's Lobby (%d/%d)", (state :: any).hostName or "Host", (state :: any).playerCount or 1, (state :: any).maxPlayers or 20)
     for _, member in members do
         local row = create("Frame", { Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 0.08, BackgroundColor3 = Palette.surface }, {
             create("UICorner", { CornerRadius = UDim.new(0, 8) }),
             create("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }),
+            create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), HorizontalAlignment = Enum.HorizontalAlignment.Left, VerticalAlignment = Enum.VerticalAlignment.Center }),
         })
         local isMemberHost = member.userId == hostUserId
         local nameLabel = create("TextLabel", {
@@ -615,8 +658,6 @@ function refreshManagePage()
             Font = Enum.Font.GothamBold,
             TextSize = 18,
             TextColor3 = isMemberHost and Color3.fromRGB(255, 230, 90) or Palette.text,
-            AnchorPoint = Vector2.new(0, 0.5),
-            Position = UDim2.fromScale(0, 0.5),
             Size = UDim2.fromScale(0.7, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -636,6 +677,27 @@ function refreshManagePage()
         row.Parent = memberList
     end
     startBtn.Visible = isHost
+    fillContainer.Visible = isHost
+    if isHost then
+        if startBtn.Parent ~= actionRow then startBtn.Parent = actionRow end
+        if fillContainer.Parent ~= actionRow then fillContainer.Parent = actionRow end
+    else
+        if startBtn.Parent ~= hiddenHostControls then startBtn.Parent = hiddenHostControls end
+        if fillContainer.Parent ~= hiddenHostControls then fillContainer.Parent = hiddenHostControls end
+    end
+    updateFillButtonStyles()
+end
+
+function refreshManagePage()
+    if not currentLobbyId then return end
+    local ok, state = pcall(function()
+        return Net.GetLobbyState:InvokeServer(currentLobbyId :: string)
+    end)
+    if ok then
+        renderManageFromState(state)
+    else
+        renderManageFromState(nil)
+    end
 end
 
 -- Wiring
@@ -644,7 +706,16 @@ playButton.MouseButton1Click:Connect(function()
         showToast(screen, "Teleports are disabled in Studio. Test in a live server.", 2.2)
         return
     end
+    local original = playButton.Text
+    playButton.Text = "Joining Game..."
+    playButton.Active = false
     Net.TeleportToPublicRequested:FireServer()
+    task.delay(2.0, function()
+        if playButton and playButton.Parent then
+            playButton.Text = original
+            playButton.Active = true
+        end
+    end)
 end)
 
 vcButton.MouseButton1Click:Connect(function()
@@ -705,10 +776,17 @@ end)
 
 startBtn.MouseButton1Click:Connect(function()
     if currentLobbyId then
+        startBtn.Active = false
+        local original = startBtn.Text
+        startBtn.Text = "Starting..."
         local result = Net.StartLobbyGame:InvokeServer(currentLobbyId)
         if (result :: any).ok then
             -- Teleport will happen server-side
+        else
+            showToast(screen, "Unable to start lobby.", 1.6)
         end
+        startBtn.Text = original
+        startBtn.Active = true
     end
 end)
 
@@ -720,8 +798,22 @@ leaveBtn.MouseButton1Click:Connect(function()
     end
 end)
 
-backToHubFromManage.MouseButton1Click:Connect(function()
-    pageLayout:JumpTo(hubPage)
+-- removed undefined backToHubFromManage; leaving lobby is the way back
+
+fillBtn.MouseButton1Click:Connect(function()
+    if currentLobbyId then
+        currentFill = true
+        updateFillButtonStyles()
+        Net.SetLobbyFillMode:InvokeServer(currentLobbyId, true)
+    end
+end)
+
+noFillBtn.MouseButton1Click:Connect(function()
+    if currentLobbyId then
+        currentFill = false
+        updateFillButtonStyles()
+        Net.SetLobbyFillMode:InvokeServer(currentLobbyId, false)
+    end
 end)
 
 -- Respond to live lobby updates by refreshing join list or manage page if visible

@@ -6,7 +6,7 @@ local Constants = {}
 Constants.GAME_TITLE = "Who Farted?"
 
 -- The main game place/experience ID to teleport into (public and private)
-Constants.MAIN_GAME_PLACE_ID = 137444158445740
+Constants.MAIN_GAME_PLACE_ID = 125356266609970
 
 -- Lobby constraints
 Constants.LOBBY_MAX_PLAYERS = 20
