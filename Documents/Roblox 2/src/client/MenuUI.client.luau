@@ -4,6 +4,8 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
@@ -115,6 +117,8 @@ local function showToast(parentGui: ScreenGui, text: string, seconds: number?)
     end)
 end
 
+-- (Camera fly-through moved below after ScreenGui is created)
+
 -- Blur setup
 local function ensureMenuBlur(): BlurEffect
     local blur = Lighting:FindFirstChildOfClass("BlurEffect")
@@ -146,6 +150,83 @@ local screen = create("ScreenGui", {
     DisplayOrder = 1,
 }, {})
 screen.Parent = PlayerGui
+
+-- Menu camera fly-through (lobby place only)
+if Constants.IS_MENU_PLACE then
+    task.defer(function()
+        local cam = Workspace.CurrentCamera
+        while not cam do
+            task.wait()
+            cam = Workspace.CurrentCamera
+        end
+        cam.CameraType = Enum.CameraType.Scriptable
+        cam.FieldOfView = Constants.MENU_CAMERA_FOV or 70
+
+        local startPos = Constants.MENU_CAMERA_START
+        local endPos = Constants.MENU_CAMERA_END
+        if not startPos or not endPos then return end
+
+        local function safeLook(fromPos: Vector3, targetPos: Vector3): CFrame
+            local delta = targetPos - fromPos
+            if delta.Magnitude < 1e-4 then
+                return CFrame.new(fromPos)
+            end
+            local dir = delta.Unit
+            local up = math.abs(dir:Dot(Vector3.yAxis)) > 0.99 and Vector3.zAxis or Vector3.yAxis
+            return CFrame.lookAt(fromPos, targetPos, up)
+        end
+
+        local function ensureStream(pos: Vector3)
+            pcall(function()
+                local distance = (endPos - startPos).Magnitude
+                local ws = (Workspace :: any)
+                if ws.StreamingEnabled then
+                    local desired = math.clamp(distance + 256, 512, 2048)
+                    ws.StreamingTargetRadius = math.max(ws.StreamingTargetRadius or 512, desired)
+                end
+                ws:RequestStreamAroundAsync(pos)
+            end)
+        end
+        ensureStream(startPos)
+        ensureStream(endPos)
+
+        local function easeInOutSine(t: number): number
+            return 0.5 - 0.5 * math.cos(math.pi * math.clamp(t, 0, 1))
+        end
+
+        local speed = math.max(1, Constants.MENU_CAMERA_SPEED_STUDS_PER_SEC or 10)
+        local pauseS = math.max(0, Constants.MENU_CAMERA_PAUSE_SECONDS or 5)
+
+        while screen.Parent and Constants.IS_MENU_PLACE do
+            local distance = (endPos - startPos).Magnitude
+            local duration = distance / speed
+            local startTime = tick()
+            while tick() - startTime < duration and screen.Parent do
+                local alpha = math.clamp((tick() - startTime) / duration, 0, 1)
+                local eased = easeInOutSine(alpha)
+                local pos = startPos:Lerp(endPos, eased)
+                local target = startPos
+                cam.CFrame = safeLook(pos, target)
+                RunService.RenderStepped:Wait()
+            end
+            cam.CFrame = safeLook(endPos, startPos)
+            task.wait(pauseS)
+
+            distance = (startPos - endPos).Magnitude
+            duration = distance / speed
+            startTime = tick()
+            while tick() - startTime < duration and screen.Parent do
+                local alpha = math.clamp((tick() - startTime) / duration, 0, 1)
+                local eased = easeInOutSine(alpha)
+                local pos = endPos:Lerp(startPos, eased)
+                cam.CFrame = safeLook(pos, startPos)
+                RunService.RenderStepped:Wait()
+            end
+            cam.CFrame = safeLook(startPos, startPos + (startPos - endPos).Unit)
+            task.wait(pauseS)
+        end
+    end)
+end
 
 -- Background frame for subtle vignette
 local bg = create("Frame", {
